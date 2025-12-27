@@ -1,6 +1,2 @@
-.venv/
-build/
-dist/
-*.spec
-*.yml
-*.txt
+*
+!*.py
