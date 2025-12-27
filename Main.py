@@ -131,7 +131,7 @@ TASK_DEFS = {
     "inventory": {
         "required": {"amount": ("int", None)},
         "optional": {
-            "item": ("str", ""),                  # nel testo dici obbligatorio item/items; qui permetto item o items
+            "item": ("str", ""),
             "items": ("list[str]", []),
             "exact-match": ("bool", True),
             "remove-items-when-complete": ("bool", False),
@@ -147,7 +147,7 @@ TASK_DEFS = {
             "mobs": ("list[str]", []),
             "name": ("str", ""),
             "names": ("list[str]", []),
-            "hostile": ("str", ""),               # lasciamo stringa vuota oppure "true"/"false" a tua scelta
+            "hostile": ("str", ""),
             "item": ("str", ""),
             "exact-match": ("bool", True),
             "worlds": ("list[str]", []),
@@ -207,6 +207,10 @@ class Quest:
     cooldown_enabled: bool = True
     cooldown_time: int = 1440
     requires: list = field(default_factory=list)
+
+    # Override modificabili dall'utente (per singola quest)
+    placeholders_override: dict = field(default_factory=dict)          # key -> value
+    progress_placeholders_override: dict = field(default_factory=dict) # taskName -> value
 
 
 # =========================
@@ -318,7 +322,6 @@ class MultiLineTextDialog:
 
         def ok():
             content = txt.get("1.0", "end").splitlines()
-            # pulizia: rimuovo solo le righe finali vuote
             while content and content[-1] == "":
                 content.pop()
             result["value"] = content
@@ -328,6 +331,67 @@ class MultiLineTextDialog:
             win.destroy()
 
         ttk.Button(btns, text="OK", command=ok).pack(side="left", padx=5)
+        ttk.Button(btns, text="Annulla", command=cancel).pack(side="left", padx=5)
+
+        win.wait_window()
+        return result["value"]
+
+
+class DictTextDialog:
+    """
+    Editor semplice per dizionari YAML-like: 1 riga = "chiave: valore"
+    (split sul primo ':', il resto è valore).
+    """
+    @staticmethod
+    def ask_dict(master, title: str, initial_dict: dict) -> dict | None:
+        win = tk.Toplevel(master)
+        win.title(title)
+        win.geometry("700x420")
+        win.grab_set()
+
+        ttk.Label(
+            win,
+            text="Formato: una riga per entry, es: chiave: valore (split sul primo ':').\n"
+                 "Suggerimento: puoi aggiungere entry custom.",
+        ).pack(anchor="w", padx=10, pady=(10, 4))
+
+        txt = tk.Text(win, wrap="none")
+        txt.pack(fill="both", expand=True, padx=10, pady=6)
+
+        lines = []
+        for k, v in (initial_dict or {}).items():
+            lines.append(f"{k}: {v}")
+        txt.insert("1.0", "\n".join(lines))
+
+        btns = ttk.Frame(win)
+        btns.pack(anchor="e", padx=10, pady=10)
+
+        result = {"value": None}
+
+        def ok():
+            raw_lines = txt.get("1.0", "end").splitlines()
+            out = {}
+            for ln in raw_lines:
+                if not ln.strip():
+                    continue
+                if ":" not in ln:
+                    messagebox.showerror("Errore", f"Riga non valida (manca ':'): {ln}", parent=win)
+                    return
+                k, v = ln.split(":", 1)
+                k = k.strip()
+                v = v.lstrip()
+                if not k:
+                    messagebox.showerror("Errore", f"Chiave vuota nella riga: {ln}", parent=win)
+                    return
+                out[k] = v
+            result["value"] = out
+            win.destroy()
+
+        def cancel():
+            win.destroy()
+
+        # ... existing code ...
+        ttk.Button(btns, text="Salva", command=ok).pack(side="left", padx=5)
         ttk.Button(btns, text="Annulla", command=cancel).pack(side="left", padx=5)
 
         win.wait_window()
@@ -476,11 +540,9 @@ class TaskConfigDialog:
         schema = TASK_DEFS[self.task_type]
 
         params = {}
-        # required: sempre presenti
         for key, (ftype, _default) in schema["required"].items():
             params[key] = self._read_field(key, ftype, required=True)
 
-        # optional: includo solo se "significativo"
         for key, (ftype, default) in schema["optional"].items():
             val = self._read_field(key, ftype, required=False)
             if ftype == "str":
@@ -490,7 +552,6 @@ class TaskConfigDialog:
                 if val:
                     params[key] = val
             elif ftype == "bool":
-                # per coerenza con i template includo sempre i bool se l'utente li ha toccati? Qui: includo sempre.
                 params[key] = val
             elif ftype == "int":
                 params[key] = val
@@ -498,7 +559,6 @@ class TaskConfigDialog:
                 if val is not None:
                     params[key] = val
 
-        # mutex validation (es: block XOR blocks)
         for a, b in schema.get("mutex_groups", []):
             a_present = a in params and ((isinstance(params[a], str) and params[a] != "") or (isinstance(params[a], list) and len(params[a]) > 0))
             b_present = b in params and ((isinstance(params[b], str) and params[b] != "") or (isinstance(params[b], list) and len(params[b]) > 0))
@@ -619,11 +679,19 @@ class QuestTab(ttk.Frame):
         self.rewards_editor = ListEditor(rewards_box, "Lista rewards", self.quest.rewards)
         self.rewards_editor.pack(fill="both", expand=True)
 
-        # ===== Placeholders preview / config hint
-        ph_box = ttk.LabelFrame(self.body, text="Placeholders (generati automaticamente)")
+        # ===== Placeholders preview + editor
+        ph_box = ttk.LabelFrame(self.body, text="Placeholders (auto + modificabili)")
         ph_box.pack(fill="x", padx=10, pady=10)
 
-        self.ph_preview = tk.Text(ph_box, height=7, wrap="none")
+        ph_btns = ttk.Frame(ph_box)
+        ph_btns.pack(fill="x", padx=8, pady=(8, 0))
+
+        ttk.Button(ph_btns, text="Modifica placeholders...", command=self._edit_placeholders).pack(side="left", padx=(0, 8))
+        ttk.Button(ph_btns, text="Modifica progress-placeholders...", command=self._edit_progress_placeholders).pack(side="left")
+
+        ttk.Button(ph_btns, text="Reset override", command=self._reset_placeholders_override).pack(side="right")
+
+        self.ph_preview = tk.Text(ph_box, height=9, wrap="none")
         self.ph_preview.pack(fill="x", padx=8, pady=8)
         self.ph_preview.configure(state="disabled")
 
@@ -682,13 +750,11 @@ class QuestTab(ttk.Frame):
     def _default_params_for(self, task_type: str) -> dict:
         schema = TASK_DEFS[task_type]
         params = {}
-        # required
         for key, (ftype, _default) in schema["required"].items():
             if ftype == "int":
                 params[key] = random.randint(1, 64)
             else:
                 params[key] = ""
-        # optional defaults
         for key, (ftype, default) in schema["optional"].items():
             if ftype == "list[str]":
                 params[key] = []
@@ -738,6 +804,30 @@ class QuestTab(ttk.Frame):
             self._refresh_tasks_tree()
             self._update_placeholders_preview()
 
+    def _reset_placeholders_override(self):
+        if not messagebox.askyesno("Conferma", "Vuoi resettare tutte le modifiche ai placeholders per questa quest?", parent=self):
+            return
+        self.quest.placeholders_override.clear()
+        self.quest.progress_placeholders_override.clear()
+        self._update_placeholders_preview()
+
+    def _edit_placeholders(self):
+        effective_placeholders, _effective_progress = self.generate_placeholders()
+        edited = DictTextDialog.ask_dict(self, "Modifica placeholders (override)", effective_placeholders)
+        if edited is None:
+            return
+        # Salvo come override completo: quello che scrivi è quello che finisce nel file per questa quest
+        self.quest.placeholders_override = edited
+        self._update_placeholders_preview()
+
+    def _edit_progress_placeholders(self):
+        _effective_placeholders, effective_progress = self.generate_placeholders()
+        edited = DictTextDialog.ask_dict(self, "Modifica progress-placeholders (override)", effective_progress)
+        if edited is None:
+            return
+        self.quest.progress_placeholders_override = edited
+        self._update_placeholders_preview()
+
     def _update_placeholders_preview(self):
         placeholders, progress_placeholders = self.generate_placeholders()
 
@@ -754,10 +844,8 @@ class QuestTab(ttk.Frame):
         self.ph_preview.insert("1.0", "\n".join(lines))
         self.ph_preview.configure(state="disabled")
 
-    def generate_placeholders(self) -> tuple[dict, dict]:
+    def _generate_placeholders_base(self) -> tuple[dict, dict]:
         cfg = self.placeholder_cfg_getter()
-        # cfg keys:
-        #   placeholders_key_fmt, placeholders_value_fmt, progress_value_fmt
         placeholders = {}
         progress = {}
 
@@ -780,6 +868,24 @@ class QuestTab(ttk.Frame):
                 goal=f"{{{tname}:goal}}",
             )
             progress[tname] = pval
+
+        return placeholders, progress
+
+    def generate_placeholders(self) -> tuple[dict, dict]:
+        # Base auto
+        base_placeholders, base_progress = self._generate_placeholders_base()
+
+        # Se l'utente ha scritto override, valgono loro (sono “finali”)
+        # Nota: questo permette anche entry custom non generate automaticamente.
+        if self.quest.placeholders_override:
+            placeholders = dict(self.quest.placeholders_override)
+        else:
+            placeholders = base_placeholders
+
+        if self.quest.progress_placeholders_override:
+            progress = dict(self.quest.progress_placeholders_override)
+        else:
+            progress = base_progress
 
         return placeholders, progress
 
@@ -836,7 +942,6 @@ class App(tk.Tk):
 
         box.columnconfigure(1, weight=1)
 
-        # Placeholder format settings
         ph = ttk.LabelFrame(self.setup_frame, text="Formato placeholders (automatici)")
         ph.pack(fill="x", pady=10)
 
@@ -879,7 +984,6 @@ class App(tk.Tk):
             messagebox.showerror("Errore", "Il range deve essere >= 1.", parent=self)
             return
 
-        # Crea quest
         self.quests.clear()
         base = 0 if last_sort <= 0 else last_sort
 
@@ -909,14 +1013,12 @@ class App(tk.Tk):
                 requires=[],
             )
 
-            # Regola requires automatica (catena)
             if sort_order > 1 and (last_sort > 0 or i > 1):
                 prev_id = f"{category}{sort_order - 1}"
                 q.requires = [prev_id]
 
             self.quests.append(q)
 
-        # Passa a UI notebook
         self.setup_frame.destroy()
         self._build_editor_ui()
 
@@ -941,11 +1043,9 @@ class App(tk.Tk):
         ttk.Button(bottom, text="Salva", command=self._save_all).pack(side="right")
 
     def _save_all(self):
-        # sincronizza UI -> model
         for tab in self.quest_tabs:
             tab.apply_ui_to_model()
 
-        # salva
         try:
             for q in self.quests:
                 self._save_quest_yaml(q)
@@ -956,20 +1056,12 @@ class App(tk.Tk):
         messagebox.showinfo("OK", "File YAML salvati correttamente nella cartella 'quests/'.", parent=self)
 
     def _save_quest_yaml(self, q: Quest):
-        # Sezione tasks nel formato del plugin:
-        # tasks:
-        #   stone:
-        #     type: "blockbreak"
-        #     amount: 64
-        #     block: STONE
         tasks_out = {}
         for tname, task in q.tasks.items():
             tdict = {"type": task.type}
             tdict.update(task.params)
             tasks_out[tname] = tdict
 
-        # placeholders auto
-        # NB: per coerenza con i template metto anche "placeholders" + "progress-placeholders"
         tab = next((t for t in self.quest_tabs if t.quest is q), None)
         placeholders, progress_placeholders = tab.generate_placeholders() if tab else ({}, {})
 
@@ -987,7 +1079,7 @@ class App(tk.Tk):
             "options": {
                 "category": q.category,
                 "repeatable": q.repeatable,
-                "requires": q.requires if q.requires else None,  # se vuota la tolgo dopo
+                "requires": q.requires if q.requires else None,
                 "cooldown": {
                     "enabled": q.cooldown_enabled,
                     "time": q.cooldown_time,
@@ -996,11 +1088,9 @@ class App(tk.Tk):
             },
         }
 
-        # pulizia: rimuovo requires se None (per non mettere "requires: null")
         if out["options"].get("requires") is None:
             out["options"].pop("requires", None)
 
-        # crea cartelle e scrive file
         base_dir = Path("quests") / q.category
         base_dir.mkdir(parents=True, exist_ok=True)
 
