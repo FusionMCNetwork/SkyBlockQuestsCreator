@@ -6,7 +6,37 @@ from tkinter import ttk, messagebox
 
 
 # =========================
-# YAML minimal dumper
+# Helpers
+# =========================
+def int_to_roman(n: int) -> str:
+    """Converte un intero positivo in numeri romani (formato latino)."""
+    if n <= 0:
+        return str(n)
+    pairs = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ]
+    out = []
+    for value, sym in pairs:
+        while n >= value:
+            out.append(sym)
+            n -= value
+    return "".join(out)
+
+
+# =========================
+# YAML minimal dumper (senza PyYAML)
 # =========================
 def _yaml_needs_quotes(s: str) -> bool:
     if s == "":
@@ -22,7 +52,6 @@ def _yaml_needs_quotes(s: str) -> bool:
 
 
 def _yaml_quote(s: str) -> str:
-    # Usiamo doppi apici, escapando i doppi apici interni
     return '"' + s.replace('"', '\\"') + '"'
 
 
@@ -60,7 +89,6 @@ def yaml_dump(data, indent: int = 0) -> str:
     if isinstance(data, str):
         return f"{sp}{_yaml_quote(data) if _yaml_needs_quotes(data) else data}"
 
-    # fallback
     return f"{sp}{_yaml_quote(str(data))}"
 
 
@@ -71,8 +99,8 @@ TASK_DEFS = {
     "blockbreak": {
         "required": {"amount": ("int", None)},
         "optional": {
-            "block": ("str", ""),                  # mutually exclusive with blocks
-            "blocks": ("list[str]", []),           # mutually exclusive with block
+            "block": ("str", ""),
+            "blocks": ("list[str]", []),
             "reverse-if-placed": ("bool", False),
             "allow-silk-touch": ("bool", True),
             "allow-negative-progress": ("bool", True),
@@ -147,7 +175,7 @@ TASK_DEFS = {
             "mobs": ("list[str]", []),
             "name": ("str", ""),
             "names": ("list[str]", []),
-            "hostile": ("str", ""),
+            "hostile": ("str", ""),  # vuoto oppure "true"/"false"
             "item": ("str", ""),
             "exact-match": ("bool", True),
             "worlds": ("list[str]", []),
@@ -176,6 +204,20 @@ TASK_DEFS = {
 
 TASK_TYPES = list(TASK_DEFS.keys())
 
+# task-type -> task-title (titoli “belli” per i player)
+TASK_TYPE_TITLES = {
+    "blockbreak": "Scava",
+    "blockplace": "Piazza",
+    "neobrewing": "Crafta",
+    "consume": "Consuma",
+    "crafting": "Crafta",
+    "farming": "Coltiva",
+    "inventory": "Ottieni",
+    "mobkilling": "Uccidi",
+    "smelting": "Cuoci",
+    "smithing": "Forgia",
+}
+
 
 # =========================
 # Data model
@@ -185,7 +227,7 @@ class Task:
     name: str
     type: str
     params: dict = field(default_factory=dict)
-    label: str = ""  # usata per la generazione placeholders (opzionale)
+    label: str = ""  # usata per lore-started + placeholders (titolo obiettivo)
 
 
 @dataclass
@@ -193,30 +235,40 @@ class Quest:
     quest_id: str
     sort_order: int
     category: str
+    category_display: str
 
     tasks: dict = field(default_factory=dict)  # name -> Task
 
     display_name: str = ""
-    display_type: str = ""
+    display_type: str = "STONE"
+
     lore_normal: list = field(default_factory=list)
     lore_started: list = field(default_factory=list)
 
-    rewards: list = field(default_factory=list)
+    rewards: list = field(default_factory=list)  # comandi minecraft
 
     repeatable: bool = False
     cooldown_enabled: bool = True
     cooldown_time: int = 1440
     requires: list = field(default_factory=list)
 
-    # Override modificabili dall'utente (per singola quest)
-    placeholders_override: dict = field(default_factory=dict)          # key -> value
-    progress_placeholders_override: dict = field(default_factory=dict) # taskName -> value
+    # placeholders modificabili
+    placeholders_override: dict = field(default_factory=dict)  # key -> value
+    progress_placeholders_override: dict = field(default_factory=dict)  # taskName -> value
+
+    # premi mostrati nel lore (sezione "Premi:") - NON sono comandi
+    lore_reward_lines: list = field(default_factory=list)
+
+    # display auto in numeri romani
+    display_auto: bool = True
 
 
 # =========================
-# Small UI helpers
+# UI helpers
 # =========================
 class ListEditor(tk.Frame):
+    """Editor listbox con Aggiungi/Modifica/Rimuovi (usato per rewards comandi, requires, ecc.)."""
+
     def __init__(self, master, title: str, initial=None):
         super().__init__(master)
         self.columnconfigure(0, weight=1)
@@ -255,14 +307,14 @@ class ListEditor(tk.Frame):
 
         result = {"value": None}
 
-        def ok():
+        def save():
             result["value"] = var.get()
             win.destroy()
 
         def cancel():
             win.destroy()
 
-        ttk.Button(btns, text="OK", command=ok).grid(row=0, column=0, padx=5)
+        ttk.Button(btns, text="Salva", command=save).grid(row=0, column=0, padx=5)
         ttk.Button(btns, text="Annulla", command=cancel).grid(row=0, column=1, padx=5)
 
         win.wait_window()
@@ -302,6 +354,8 @@ class ListEditor(tk.Frame):
 
 
 class MultiLineTextDialog:
+    """Dialog per list[str] (una riga = un valore) con tasto SALVA."""
+
     @staticmethod
     def ask_list(master, title: str, initial: list[str]) -> list[str] | None:
         win = tk.Toplevel(master)
@@ -320,7 +374,7 @@ class MultiLineTextDialog:
 
         result = {"value": None}
 
-        def ok():
+        def save():
             content = txt.get("1.0", "end").splitlines()
             while content and content[-1] == "":
                 content.pop()
@@ -330,7 +384,7 @@ class MultiLineTextDialog:
         def cancel():
             win.destroy()
 
-        ttk.Button(btns, text="OK", command=ok).pack(side="left", padx=5)
+        ttk.Button(btns, text="Salva", command=save).pack(side="left", padx=5)
         ttk.Button(btns, text="Annulla", command=cancel).pack(side="left", padx=5)
 
         win.wait_window()
@@ -339,9 +393,10 @@ class MultiLineTextDialog:
 
 class DictTextDialog:
     """
-    Editor semplice per dizionari YAML-like: 1 riga = "chiave: valore"
-    (split sul primo ':', il resto è valore).
+    Editor per dict YAML-like: 1 riga = "chiave: valore"
+    (split sul primo ':', il resto è valore). Ha tasto SALVA.
     """
+
     @staticmethod
     def ask_dict(master, title: str, initial_dict: dict) -> dict | None:
         win = tk.Toplevel(master)
@@ -368,7 +423,7 @@ class DictTextDialog:
 
         result = {"value": None}
 
-        def ok():
+        def save():
             raw_lines = txt.get("1.0", "end").splitlines()
             out = {}
             for ln in raw_lines:
@@ -390,8 +445,7 @@ class DictTextDialog:
         def cancel():
             win.destroy()
 
-        # ... existing code ...
-        ttk.Button(btns, text="Salva", command=ok).pack(side="left", padx=5)
+        ttk.Button(btns, text="Salva", command=save).pack(side="left", padx=5)
         ttk.Button(btns, text="Annulla", command=cancel).pack(side="left", padx=5)
 
         win.wait_window()
@@ -464,12 +518,12 @@ class TaskConfigDialog:
         container = ttk.Frame(self.win)
         container.pack(fill="both", expand=True, padx=10, pady=10)
 
-        ttk.Label(container, text="Label (opzionale, usata nei placeholders):").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(container, text="Label (Nome obiettivo per lore-started / placeholders):").grid(row=0, column=0, sticky="w", pady=(0, 4))
         self.label_var = tk.StringVar(value=initial_label or "")
         ttk.Entry(container, textvariable=self.label_var).grid(row=1, column=0, sticky="ew", pady=(0, 10))
         container.columnconfigure(0, weight=1)
 
-        self.fields = {}  # key -> (type, widget/var)
+        self.fields = {}  # key -> (type, holder)
 
         schema = TASK_DEFS[task_type]
         all_fields = [("required", schema["required"]), ("optional", schema["optional"])]
@@ -487,41 +541,35 @@ class TaskConfigDialog:
 
                 if ftype == "int":
                     var = tk.StringVar(value=str(init_value if init_value is not None else random.randint(1, 64)))
-                    ent = ttk.Entry(container, textvariable=var)
-                    ent.grid(row=row, column=0, sticky="ew", pady=(0, 8))
+                    ttk.Entry(container, textvariable=var).grid(row=row, column=0, sticky="ew", pady=(0, 8))
                     self.fields[key] = (ftype, var)
 
                 elif ftype == "bool":
                     var = tk.BooleanVar(value=bool(init_value))
-                    chk = ttk.Checkbutton(container, variable=var, text="true/false")
-                    chk.grid(row=row, column=0, sticky="w", pady=(0, 8))
+                    ttk.Checkbutton(container, variable=var, text="true/false").grid(row=row, column=0, sticky="w", pady=(0, 8))
                     self.fields[key] = (ftype, var)
 
                 elif ftype == "str":
                     var = tk.StringVar(value=str(init_value) if init_value is not None else "")
-                    ent = ttk.Entry(container, textvariable=var)
-                    ent.grid(row=row, column=0, sticky="ew", pady=(0, 8))
+                    ttk.Entry(container, textvariable=var).grid(row=row, column=0, sticky="ew", pady=(0, 8))
                     self.fields[key] = (ftype, var)
 
                 elif ftype == "list[str]":
-                    btn = ttk.Button(
-                        container,
-                        text="Modifica lista...",
-                        command=lambda k=key: self._edit_list(k),
+                    ttk.Button(container, text="Modifica lista...", command=lambda k=key: self._edit_list(k)).grid(
+                        row=row, column=0, sticky="w", pady=(0, 8)
                     )
-                    btn.grid(row=row, column=0, sticky="w", pady=(0, 8))
                     self.fields[key] = (ftype, list(init_value or []))
 
                 else:
                     var = tk.StringVar(value=str(init_value))
-                    ent = ttk.Entry(container, textvariable=var)
-                    ent.grid(row=row, column=0, sticky="ew", pady=(0, 8))
+                    ttk.Entry(container, textvariable=var).grid(row=row, column=0, sticky="ew", pady=(0, 8))
                     self.fields[key] = (ftype, var)
 
                 row += 1
 
-        hint = "Nota: per i campi mutuamente esclusivi (es. block/blocks) lasciane uno vuoto."
-        ttk.Label(container, text=hint).grid(row=row, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(container, text="Nota: per campi mutuamente esclusivi (es. block/blocks) valorizzane solo uno.").grid(
+            row=row, column=0, sticky="w", pady=(8, 0)
+        )
         row += 1
 
         btns = ttk.Frame(container)
@@ -536,15 +584,32 @@ class TaskConfigDialog:
             return
         self.fields[key] = (ftype, edited)
 
+    def _read_field(self, key: str, ftype: str):
+        _t, holder = self.fields[key]
+        if ftype == "int":
+            s = holder.get().strip()
+            try:
+                return int(s)
+            except ValueError:
+                messagebox.showerror("Errore", f"'{key}' deve essere un numero intero.", parent=self.win)
+                raise
+        if ftype == "bool":
+            return bool(holder.get())
+        if ftype == "str":
+            return holder.get()
+        if ftype == "list[str]":
+            return list(holder)
+        return holder.get()
+
     def _ok(self):
         schema = TASK_DEFS[self.task_type]
 
         params = {}
         for key, (ftype, _default) in schema["required"].items():
-            params[key] = self._read_field(key, ftype, required=True)
+            params[key] = self._read_field(key, ftype)
 
         for key, (ftype, default) in schema["optional"].items():
-            val = self._read_field(key, ftype, required=False)
+            val = self._read_field(key, ftype)
             if ftype == "str":
                 if val != "":
                     params[key] = val
@@ -570,24 +635,6 @@ class TaskConfigDialog:
         self.result = (params, label)
         self.win.destroy()
 
-    def _read_field(self, key: str, ftype: str, required: bool):
-        _t, holder = self.fields[key]
-        if ftype == "int":
-            s = holder.get().strip()
-            try:
-                v = int(s)
-            except ValueError:
-                messagebox.showerror("Errore", f"'{key}' deve essere un numero intero.", parent=self.win)
-                raise
-            return v
-        if ftype == "bool":
-            return bool(holder.get())
-        if ftype == "str":
-            return holder.get()
-        if ftype == "list[str]":
-            return list(holder)
-        return holder.get()
-
     def _cancel(self):
         self.win.destroy()
 
@@ -612,10 +659,7 @@ class QuestTab(ttk.Frame):
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
         self.body = ttk.Frame(canvas)
 
-        self.body.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
-        )
+        self.body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=self.body, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
@@ -624,6 +668,73 @@ class QuestTab(ttk.Frame):
 
         self._build()
 
+    # ----- Lore auto -----
+    def _task_category_title(self, task_type: str) -> str:
+        # Usa i titoli definiti dall'utente per mostrare categorie gradevoli ai player
+        return TASK_TYPE_TITLES.get(task_type, task_type)
+
+    def _rebuild_lore(self):
+        grouped: dict[str, list[tuple[str, str]]] = {}
+        for tname, task in self.quest.tasks.items():
+            cat = self._task_category_title(task.type)
+            grouped.setdefault(cat, [])
+            title = (task.label or tname).strip() or tname
+            grouped[cat].append((tname, title))
+
+        lore_normal: list[str] = []
+
+        # categorie in ordine alfabetico dei titoli “belli”
+        for cat in sorted(grouped.keys()):
+            lore_normal.append(f"&6{cat}:")
+            for _tname, title in grouped[cat]:
+                lore_normal.append(f"&8- &7{title}")
+
+        lore_normal.append("")
+        lore_normal.append("&6Premi:")
+        for line in (self.quest.lore_reward_lines or []):
+            lore_normal.append(f"&8- &7{line}")
+        lore_normal.append("")
+        lore_normal.append("&c&l ✘ &7Non iniziata.")
+
+        lore_started: list[str] = [""]
+        for tname, task in self.quest.tasks.items():
+            title = (task.label or tname).strip() or tname
+            lore_started.append(f"&6{title}: &7{{{tname}:progress}}/{{{tname}:goal}}")
+
+        self.quest.lore_normal = lore_normal
+        self.quest.lore_started = lore_started
+
+        self._set_text_view(self.lore_normal_view, "\n".join(lore_normal))
+        self._set_text_view(self.lore_started_view, "\n".join(lore_started))
+
+    @staticmethod
+    def _set_text_view(widget: tk.Text, content: str):
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", content)
+        widget.configure(state="disabled")
+
+    def _edit_lore_rewards(self):
+        edited = MultiLineTextDialog.ask_list(self, "Modifica premi (lore)", list(self.quest.lore_reward_lines or []))
+        if edited is None:
+            return
+        self.quest.lore_reward_lines = edited
+        self._rebuild_lore()
+
+    # ----- Display auto -----
+    def _default_display_name(self) -> str:
+        roman = int_to_roman(int(self.sort_order_var.get()))
+        return f"&e{self.quest.category_display} {roman}"
+
+    def _on_sort_order_change(self, *_):
+        if self.display_auto_var.get():
+            self.display_name_var.set(self._default_display_name())
+
+    def _on_display_auto_toggle(self):
+        if self.display_auto_var.get():
+            self.display_name_var.set(self._default_display_name())
+
+    # ----- UI build -----
     def _build(self):
         # ===== Tasks
         tasks_box = ttk.LabelFrame(self.body, text="Tasks")
@@ -633,14 +744,13 @@ class QuestTab(ttk.Frame):
         self.tasks_tree = ttk.Treeview(tasks_box, columns=cols, show="headings", height=6)
         self.tasks_tree.heading("name", text="Nome")
         self.tasks_tree.heading("type", text="Tipo")
-        self.tasks_tree.column("name", width=200)
+        self.tasks_tree.column("name", width=220)
         self.tasks_tree.column("type", width=160)
         self.tasks_tree.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
         tasks_box.columnconfigure(0, weight=1)
 
         btns = ttk.Frame(tasks_box)
         btns.grid(row=0, column=1, sticky="ns", padx=(0, 8), pady=8)
-
         ttk.Button(btns, text="Aggiungi", command=self._add_task).grid(row=0, column=0, sticky="ew", pady=2)
         ttk.Button(btns, text="Modifica", command=self._edit_task).grid(row=1, column=0, sticky="ew", pady=2)
         ttk.Button(btns, text="Rimuovi", command=self._remove_task).grid(row=2, column=0, sticky="ew", pady=2)
@@ -650,6 +760,8 @@ class QuestTab(ttk.Frame):
         # ===== Display
         display_box = ttk.LabelFrame(self.body, text="Display")
         display_box.pack(fill="x", padx=10, pady=10)
+        display_box.columnconfigure(0, weight=1)
+        display_box.columnconfigure(1, weight=1)
 
         ttk.Label(display_box, text="name").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))
         self.display_name_var = tk.StringVar(value=self.quest.display_name)
@@ -659,36 +771,55 @@ class QuestTab(ttk.Frame):
         self.display_type_var = tk.StringVar(value=self.quest.display_type)
         ttk.Entry(display_box, textvariable=self.display_type_var).grid(row=1, column=1, sticky="ew", padx=8, pady=(0, 8))
 
-        display_box.columnconfigure(0, weight=1)
-        display_box.columnconfigure(1, weight=1)
+        auto_frame = ttk.Frame(display_box)
+        auto_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
 
-        lore_frame = ttk.Frame(display_box)
-        lore_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=8, pady=8)
+        self.display_auto_var = tk.BooleanVar(value=self.quest.display_auto)
+        ttk.Checkbutton(
+            auto_frame,
+            text="Display name automatico (numero romano)",
+            variable=self.display_auto_var,
+            command=self._on_display_auto_toggle
+        ).pack(side="left")
+
+        # ===== Lore auto + premi lore
+        lore_box = ttk.LabelFrame(self.body, text="Lore (auto)")
+        lore_box.pack(fill="x", padx=10, pady=10)
+
+        lore_btns = ttk.Frame(lore_box)
+        lore_btns.pack(fill="x", padx=8, pady=(8, 0))
+        ttk.Button(lore_btns, text="Modifica premi (lore)...", command=self._edit_lore_rewards).pack(side="left")
+        ttk.Button(lore_btns, text="Rigenera lore", command=self._rebuild_lore).pack(side="left", padx=8)
+
+        lore_frame = ttk.Frame(lore_box)
+        lore_frame.pack(fill="x", padx=8, pady=8)
         lore_frame.columnconfigure(0, weight=1)
         lore_frame.columnconfigure(1, weight=1)
 
-        self.lore_normal_editor = ListEditor(lore_frame, "lore-normal", self.quest.lore_normal)
-        self.lore_normal_editor.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        ttk.Label(lore_frame, text="lore-normal").grid(row=0, column=0, sticky="w")
+        ttk.Label(lore_frame, text="lore-started").grid(row=0, column=1, sticky="w")
 
-        self.lore_started_editor = ListEditor(lore_frame, "lore-started", self.quest.lore_started)
-        self.lore_started_editor.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self.lore_normal_view = tk.Text(lore_frame, height=12, wrap="none")
+        self.lore_started_view = tk.Text(lore_frame, height=12, wrap="none")
+        self.lore_normal_view.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=(4, 0))
+        self.lore_started_view.grid(row=1, column=1, sticky="nsew", padx=(8, 0), pady=(4, 0))
+        self.lore_normal_view.configure(state="disabled")
+        self.lore_started_view.configure(state="disabled")
 
-        # ===== Rewards
+        # ===== Rewards (comandi minecraft)
         rewards_box = ttk.LabelFrame(self.body, text="Rewards (comandi Minecraft)")
         rewards_box.pack(fill="x", padx=10, pady=10)
         self.rewards_editor = ListEditor(rewards_box, "Lista rewards", self.quest.rewards)
         self.rewards_editor.pack(fill="both", expand=True)
 
-        # ===== Placeholders preview + editor
+        # ===== Placeholders (auto + modificabili)
         ph_box = ttk.LabelFrame(self.body, text="Placeholders (auto + modificabili)")
         ph_box.pack(fill="x", padx=10, pady=10)
 
         ph_btns = ttk.Frame(ph_box)
         ph_btns.pack(fill="x", padx=8, pady=(8, 0))
-
         ttk.Button(ph_btns, text="Modifica placeholders...", command=self._edit_placeholders).pack(side="left", padx=(0, 8))
         ttk.Button(ph_btns, text="Modifica progress-placeholders...", command=self._edit_progress_placeholders).pack(side="left")
-
         ttk.Button(ph_btns, text="Reset override", command=self._reset_placeholders_override).pack(side="right")
 
         self.ph_preview = tk.Text(ph_box, height=9, wrap="none")
@@ -698,7 +829,6 @@ class QuestTab(ttk.Frame):
         ttk.Button(ph_box, text="Aggiorna anteprima placeholders", command=self._update_placeholders_preview).pack(
             anchor="e", padx=8, pady=(0, 8)
         )
-        self._update_placeholders_preview()
 
         # ===== Options
         opt_box = ttk.LabelFrame(self.body, text="Options")
@@ -707,19 +837,18 @@ class QuestTab(ttk.Frame):
 
         ttk.Label(opt_box, text="category").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))
         self.category_var = tk.StringVar(value=self.quest.category)
-        ent_cat = ttk.Entry(opt_box, textvariable=self.category_var, state="disabled")
-        ent_cat.grid(row=0, column=1, sticky="ew", padx=8, pady=(8, 2))
+        ttk.Entry(opt_box, textvariable=self.category_var, state="disabled").grid(row=0, column=1, sticky="ew", padx=8, pady=(8, 2))
 
         ttk.Label(opt_box, text="sort-order").grid(row=1, column=0, sticky="w", padx=8, pady=2)
         self.sort_order_var = tk.IntVar(value=self.quest.sort_order)
-        ttk.Spinbox(opt_box, from_=1, to=999999, textvariable=self.sort_order_var, width=10).grid(
-            row=1, column=1, sticky="w", padx=8, pady=2
-        )
+        sort_spin = ttk.Spinbox(opt_box, from_=1, to=999999, textvariable=self.sort_order_var, width=10)
+        sort_spin.grid(row=1, column=1, sticky="w", padx=8, pady=2)
+
+        # aggiorna display name quando cambia sort-order (solo se auto attivo)
+        self.sort_order_var.trace_add("write", self._on_sort_order_change)
 
         self.repeatable_var = tk.BooleanVar(value=self.quest.repeatable)
-        ttk.Checkbutton(opt_box, text="repeatable", variable=self.repeatable_var).grid(
-            row=2, column=1, sticky="w", padx=8, pady=2
-        )
+        ttk.Checkbutton(opt_box, text="repeatable", variable=self.repeatable_var).grid(row=2, column=1, sticky="w", padx=8, pady=2)
 
         cooldown_frame = ttk.Frame(opt_box)
         cooldown_frame.grid(row=3, column=1, sticky="w", padx=8, pady=2)
@@ -734,6 +863,13 @@ class QuestTab(ttk.Frame):
         self.requires_editor = ListEditor(opt_box, "requires (quest richieste)", self.quest.requires)
         self.requires_editor.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=8, pady=8)
 
+        # stato iniziale coerente
+        if self.display_auto_var.get():
+            self.display_name_var.set(self._default_display_name())
+        self._rebuild_lore()
+        self._update_placeholders_preview()
+
+    # ----- Tasks management -----
     def _refresh_tasks_tree(self):
         for i in self.tasks_tree.get_children():
             self.tasks_tree.delete(i)
@@ -778,6 +914,7 @@ class QuestTab(ttk.Frame):
 
         self.quest.tasks[name] = Task(name=name, type=task_type, params=params, label=label)
         self._refresh_tasks_tree()
+        self._rebuild_lore()
         self._update_placeholders_preview()
 
     def _edit_task(self):
@@ -793,6 +930,7 @@ class QuestTab(ttk.Frame):
         task.params = params
         task.label = label
         self._refresh_tasks_tree()
+        self._rebuild_lore()
         self._update_placeholders_preview()
 
     def _remove_task(self):
@@ -802,8 +940,10 @@ class QuestTab(ttk.Frame):
         if messagebox.askyesno("Conferma", f"Rimuovere la task '{name}'?", parent=self):
             self.quest.tasks.pop(name, None)
             self._refresh_tasks_tree()
+            self._rebuild_lore()
             self._update_placeholders_preview()
 
+    # ----- Placeholders -----
     def _reset_placeholders_override(self):
         if not messagebox.askyesno("Conferma", "Vuoi resettare tutte le modifiche ai placeholders per questa quest?", parent=self):
             return
@@ -812,17 +952,16 @@ class QuestTab(ttk.Frame):
         self._update_placeholders_preview()
 
     def _edit_placeholders(self):
-        effective_placeholders, _effective_progress = self.generate_placeholders()
-        edited = DictTextDialog.ask_dict(self, "Modifica placeholders (override)", effective_placeholders)
+        effective_placeholders, _ = self.generate_placeholders()
+        edited = DictTextDialog.ask_dict(self, "Modifica placeholders", effective_placeholders)
         if edited is None:
             return
-        # Salvo come override completo: quello che scrivi è quello che finisce nel file per questa quest
         self.quest.placeholders_override = edited
         self._update_placeholders_preview()
 
     def _edit_progress_placeholders(self):
-        _effective_placeholders, effective_progress = self.generate_placeholders()
-        edited = DictTextDialog.ask_dict(self, "Modifica progress-placeholders (override)", effective_progress)
+        _, effective_progress = self.generate_placeholders()
+        edited = DictTextDialog.ask_dict(self, "Modifica progress-placeholders", effective_progress)
         if edited is None:
             return
         self.quest.progress_placeholders_override = edited
@@ -872,28 +1011,19 @@ class QuestTab(ttk.Frame):
         return placeholders, progress
 
     def generate_placeholders(self) -> tuple[dict, dict]:
-        # Base auto
         base_placeholders, base_progress = self._generate_placeholders_base()
 
-        # Se l'utente ha scritto override, valgono loro (sono “finali”)
-        # Nota: questo permette anche entry custom non generate automaticamente.
-        if self.quest.placeholders_override:
-            placeholders = dict(self.quest.placeholders_override)
-        else:
-            placeholders = base_placeholders
-
-        if self.quest.progress_placeholders_override:
-            progress = dict(self.quest.progress_placeholders_override)
-        else:
-            progress = base_progress
+        placeholders = dict(self.quest.placeholders_override) if self.quest.placeholders_override else base_placeholders
+        progress = dict(self.quest.progress_placeholders_override) if self.quest.progress_placeholders_override else base_progress
 
         return placeholders, progress
 
+    # ----- Apply UI -----
     def apply_ui_to_model(self):
+        self.quest.display_auto = bool(self.display_auto_var.get())
         self.quest.display_name = self.display_name_var.get()
         self.quest.display_type = self.display_type_var.get()
-        self.quest.lore_normal = self.lore_normal_editor.get_list()
-        self.quest.lore_started = self.lore_started_editor.get_list()
+
         self.quest.rewards = self.rewards_editor.get_list()
 
         self.quest.sort_order = int(self.sort_order_var.get())
@@ -901,6 +1031,9 @@ class QuestTab(ttk.Frame):
         self.quest.cooldown_enabled = bool(self.cooldown_enabled_var.get())
         self.quest.cooldown_time = int(self.cooldown_time_var.get())
         self.quest.requires = self.requires_editor.get_list()
+
+        # lore sempre coerenti con task/premi lore
+        self._rebuild_lore()
 
 
 # =========================
@@ -910,7 +1043,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("SkyBlock Quests Creator")
-        self.geometry("980x720")
+        self.geometry("980x760")
 
         self.quests: list[Quest] = []
         self.quest_tabs: list[QuestTab] = []
@@ -980,6 +1113,9 @@ class App(tk.Tk):
         if not category:
             messagebox.showerror("Errore", "La categoria non può essere vuota.", parent=self)
             return
+        if not category_display:
+            messagebox.showerror("Errore", "Il nome visualizzato non può essere vuoto.", parent=self)
+            return
         if count <= 0:
             messagebox.showerror("Errore", "Il range deve essere >= 1.", parent=self)
             return
@@ -995,24 +1131,21 @@ class App(tk.Tk):
                 quest_id=quest_id,
                 sort_order=sort_order,
                 category=category,
-                display_name=f"&e{category_display} {sort_order}",
+                category_display=category_display,
+                display_name=f"&e{category_display} {int_to_roman(sort_order)}",  # numero romano
                 display_type="STONE",
-                lore_normal=[
-                    "&6Obiettivo:",
-                    "&8 - &7Configura le task qui sotto",
-                    "",
-                    "&c&l ✘ &7Non iniziata.",
-                ],
-                lore_started=[
-                    "",
-                ],
+                lore_normal=[],
+                lore_started=[""],
                 rewards=[],
                 repeatable=False,
                 cooldown_enabled=True,
                 cooldown_time=1440,
                 requires=[],
+                lore_reward_lines=[],
+                display_auto=True,
             )
 
+            # requires automatica (catena)
             if sort_order > 1 and (last_sort > 0 or i > 1):
                 prev_id = f"{category}{sort_order - 1}"
                 q.requires = [prev_id]
@@ -1026,7 +1159,7 @@ class App(tk.Tk):
         top = ttk.Frame(self)
         top.pack(fill="x", padx=10, pady=8)
 
-        ttk.Label(top, text="Schede quest: configura tutto e poi premi 'Salva' per generare i file .yml").pack(anchor="w")
+        ttk.Label(top, text="Configura le quest e poi premi 'Salva' per generare i file .yml").pack(anchor="w")
 
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=10, pady=10)
