@@ -200,6 +200,18 @@ TASK_DEFS = {
         },
         "mutex_groups": [],
     },
+    # === NUOVA TASK: enchanting ===
+    "enchanting": {
+        "required": {"amount": ("int", None)},
+        "optional": {
+            "item": ("str", ""),
+            "enchantment": ("list[str]", []),
+            # min-level: opzionale, default null -> se vuoto NON va scritto nel yaml e NON randomizzato
+            "min-level": ("opt_int", None),
+            "worlds": ("list[str]", []),
+        },
+        "mutex_groups": [],
+    },
 }
 
 TASK_TYPES = list(TASK_DEFS.keys())
@@ -216,6 +228,7 @@ TASK_TYPE_TITLES = {
     "mobkilling": "Uccidi",
     "smelting": "Cuoci",
     "smithing": "Forgia",
+    "enchanting": "Incanta",
 }
 
 
@@ -512,18 +525,18 @@ class TaskConfigDialog:
 
         self.win = tk.Toplevel(master)
         self.win.title(f"Config Task: {task_type}")
-        self.win.geometry("560x520")
+        self.win.geometry("560x540")
         self.win.grab_set()
 
         container = ttk.Frame(self.win)
         container.pack(fill="both", expand=True, padx=10, pady=10)
+        container.columnconfigure(0, weight=1)
 
         ttk.Label(container, text="Label (Nome obiettivo per lore-started / placeholders):").grid(row=0, column=0, sticky="w", pady=(0, 4))
         self.label_var = tk.StringVar(value=initial_label or "")
         ttk.Entry(container, textvariable=self.label_var).grid(row=1, column=0, sticky="ew", pady=(0, 10))
-        container.columnconfigure(0, weight=1)
 
-        self.fields = {}  # key -> (type, holder)
+        self.fields = {}  # key -> (ftype, holder)
 
         schema = TASK_DEFS[task_type]
         all_fields = [("required", schema["required"]), ("optional", schema["optional"])]
@@ -541,6 +554,12 @@ class TaskConfigDialog:
 
                 if ftype == "int":
                     var = tk.StringVar(value=str(init_value if init_value is not None else random.randint(1, 64)))
+                    ttk.Entry(container, textvariable=var).grid(row=row, column=0, sticky="ew", pady=(0, 8))
+                    self.fields[key] = (ftype, var)
+
+                elif ftype == "opt_int":
+                    # opzionale: se vuoto NON viene incluso nel yaml (e NON randomizziamo)
+                    var = tk.StringVar(value="" if init_value is None else str(init_value))
                     ttk.Entry(container, textvariable=var).grid(row=row, column=0, sticky="ew", pady=(0, 8))
                     self.fields[key] = (ftype, var)
 
@@ -593,6 +612,17 @@ class TaskConfigDialog:
             except ValueError:
                 messagebox.showerror("Errore", f"'{key}' deve essere un numero intero.", parent=self.win)
                 raise
+
+        if ftype == "opt_int":
+            s = holder.get().strip()
+            if s == "":
+                return None
+            try:
+                return int(s)
+            except ValueError:
+                messagebox.showerror("Errore", f"'{key}' deve essere un numero intero oppure vuoto.", parent=self.win)
+                raise
+
         if ftype == "bool":
             return bool(holder.get())
         if ftype == "str":
@@ -610,11 +640,16 @@ class TaskConfigDialog:
 
         for key, (ftype, default) in schema["optional"].items():
             val = self._read_field(key, ftype)
+
             if ftype == "str":
                 if val != "":
                     params[key] = val
             elif ftype == "list[str]":
                 if val:
+                    params[key] = val
+            elif ftype == "opt_int":
+                # regola richiesta: se omesso NON inserire la chiave nel yaml
+                if val is not None:
                     params[key] = val
             elif ftype == "bool":
                 params[key] = val
@@ -668,9 +703,7 @@ class QuestTab(ttk.Frame):
 
         self._build()
 
-    # ----- Lore auto -----
     def _task_category_title(self, task_type: str) -> str:
-        # Usa i titoli definiti dall'utente per mostrare categorie gradevoli ai player
         return TASK_TYPE_TITLES.get(task_type, task_type)
 
     def _rebuild_lore(self):
@@ -682,8 +715,6 @@ class QuestTab(ttk.Frame):
             grouped[cat].append((tname, title))
 
         lore_normal: list[str] = []
-
-        # categorie in ordine alfabetico dei titoli “belli”
         for cat in sorted(grouped.keys()):
             lore_normal.append(f"&6{cat}:")
             for _tname, title in grouped[cat]:
@@ -721,7 +752,6 @@ class QuestTab(ttk.Frame):
         self.quest.lore_reward_lines = edited
         self._rebuild_lore()
 
-    # ----- Display auto -----
     def _default_display_name(self) -> str:
         roman = int_to_roman(int(self.sort_order_var.get()))
         return f"&e{self.quest.category_display} {roman}"
@@ -734,7 +764,6 @@ class QuestTab(ttk.Frame):
         if self.display_auto_var.get():
             self.display_name_var.set(self._default_display_name())
 
-    # ----- UI build -----
     def _build(self):
         # ===== Tasks
         tasks_box = ttk.LabelFrame(self.body, text="Tasks")
@@ -773,16 +802,15 @@ class QuestTab(ttk.Frame):
 
         auto_frame = ttk.Frame(display_box)
         auto_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
-
         self.display_auto_var = tk.BooleanVar(value=self.quest.display_auto)
         ttk.Checkbutton(
             auto_frame,
             text="Display name automatico (numero romano)",
             variable=self.display_auto_var,
-            command=self._on_display_auto_toggle
+            command=self._on_display_auto_toggle,
         ).pack(side="left")
 
-        # ===== Lore auto + premi lore
+        # ===== Lore auto
         lore_box = ttk.LabelFrame(self.body, text="Lore (auto)")
         lore_box.pack(fill="x", padx=10, pady=10)
 
@@ -806,13 +834,13 @@ class QuestTab(ttk.Frame):
         self.lore_normal_view.configure(state="disabled")
         self.lore_started_view.configure(state="disabled")
 
-        # ===== Rewards (comandi minecraft)
+        # ===== Rewards (comandi)
         rewards_box = ttk.LabelFrame(self.body, text="Rewards (comandi Minecraft)")
         rewards_box.pack(fill="x", padx=10, pady=10)
         self.rewards_editor = ListEditor(rewards_box, "Lista rewards", self.quest.rewards)
         self.rewards_editor.pack(fill="both", expand=True)
 
-        # ===== Placeholders (auto + modificabili)
+        # ===== Placeholders
         ph_box = ttk.LabelFrame(self.body, text="Placeholders (auto + modificabili)")
         ph_box.pack(fill="x", padx=10, pady=10)
 
@@ -841,10 +869,9 @@ class QuestTab(ttk.Frame):
 
         ttk.Label(opt_box, text="sort-order").grid(row=1, column=0, sticky="w", padx=8, pady=2)
         self.sort_order_var = tk.IntVar(value=self.quest.sort_order)
-        sort_spin = ttk.Spinbox(opt_box, from_=1, to=999999, textvariable=self.sort_order_var, width=10)
-        sort_spin.grid(row=1, column=1, sticky="w", padx=8, pady=2)
-
-        # aggiorna display name quando cambia sort-order (solo se auto attivo)
+        ttk.Spinbox(opt_box, from_=1, to=999999, textvariable=self.sort_order_var, width=10).grid(
+            row=1, column=1, sticky="w", padx=8, pady=2
+        )
         self.sort_order_var.trace_add("write", self._on_sort_order_change)
 
         self.repeatable_var = tk.BooleanVar(value=self.quest.repeatable)
@@ -863,13 +890,12 @@ class QuestTab(ttk.Frame):
         self.requires_editor = ListEditor(opt_box, "requires (quest richieste)", self.quest.requires)
         self.requires_editor.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=8, pady=8)
 
-        # stato iniziale coerente
+        # stato iniziale
         if self.display_auto_var.get():
             self.display_name_var.set(self._default_display_name())
         self._rebuild_lore()
         self._update_placeholders_preview()
 
-    # ----- Tasks management -----
     def _refresh_tasks_tree(self):
         for i in self.tasks_tree.get_children():
             self.tasks_tree.delete(i)
@@ -886,14 +912,19 @@ class QuestTab(ttk.Frame):
     def _default_params_for(self, task_type: str) -> dict:
         schema = TASK_DEFS[task_type]
         params = {}
+        # required
         for key, (ftype, _default) in schema["required"].items():
             if ftype == "int":
                 params[key] = random.randint(1, 64)
             else:
                 params[key] = ""
+        # optional defaults
         for key, (ftype, default) in schema["optional"].items():
+            # per opt_int default deve essere None e NON random
             if ftype == "list[str]":
                 params[key] = []
+            elif ftype == "opt_int":
+                params[key] = None
             else:
                 params[key] = default
         return params
@@ -1012,13 +1043,10 @@ class QuestTab(ttk.Frame):
 
     def generate_placeholders(self) -> tuple[dict, dict]:
         base_placeholders, base_progress = self._generate_placeholders_base()
-
         placeholders = dict(self.quest.placeholders_override) if self.quest.placeholders_override else base_placeholders
         progress = dict(self.quest.progress_placeholders_override) if self.quest.progress_placeholders_override else base_progress
-
         return placeholders, progress
 
-    # ----- Apply UI -----
     def apply_ui_to_model(self):
         self.quest.display_auto = bool(self.display_auto_var.get())
         self.quest.display_name = self.display_name_var.get()
@@ -1032,7 +1060,6 @@ class QuestTab(ttk.Frame):
         self.quest.cooldown_time = int(self.cooldown_time_var.get())
         self.quest.requires = self.requires_editor.get_list()
 
-        # lore sempre coerenti con task/premi lore
         self._rebuild_lore()
 
 
@@ -1132,7 +1159,7 @@ class App(tk.Tk):
                 sort_order=sort_order,
                 category=category,
                 category_display=category_display,
-                display_name=f"&e{category_display} {int_to_roman(sort_order)}",  # numero romano
+                display_name=f"&e{category_display} {int_to_roman(sort_order)}",
                 display_type="STONE",
                 lore_normal=[],
                 lore_started=[""],
@@ -1145,7 +1172,6 @@ class App(tk.Tk):
                 display_auto=True,
             )
 
-            # requires automatica (catena)
             if sort_order > 1 and (last_sort > 0 or i > 1):
                 prev_id = f"{category}{sort_order - 1}"
                 q.requires = [prev_id]
@@ -1158,7 +1184,6 @@ class App(tk.Tk):
     def _build_editor_ui(self):
         top = ttk.Frame(self)
         top.pack(fill="x", padx=10, pady=8)
-
         ttk.Label(top, text="Configura le quest e poi premi 'Salva' per generare i file .yml").pack(anchor="w")
 
         self.nb = ttk.Notebook(self)
@@ -1172,7 +1197,6 @@ class App(tk.Tk):
 
         bottom = ttk.Frame(self)
         bottom.pack(fill="x", padx=10, pady=(0, 10))
-
         ttk.Button(bottom, text="Salva", command=self._save_all).pack(side="right")
 
     def _save_all(self):
