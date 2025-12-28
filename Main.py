@@ -200,7 +200,6 @@ TASK_DEFS = {
         },
         "mutex_groups": [],
     },
-    # === NUOVA TASK: enchanting ===
     "enchanting": {
         "required": {"amount": ("int", None)},
         "optional": {
@@ -211,6 +210,34 @@ TASK_DEFS = {
             "worlds": ("list[str]", []),
         },
         "mutex_groups": [],
+    },
+    # === NUOVA TASK: interact ===
+    "interact": {
+        "required": {"amount": ("int", None)},
+        "optional": {
+            "item": ("str", ""),
+            "exact-match": ("bool", True),
+
+            "block": ("str", ""),
+            "blocks": ("list[str]", []),
+
+            "action": ("str", ""),
+            "actions": ("list[str]", []),
+
+            "use-interacted-block-result": ("str", ""),
+            "use-interacted-block-results": ("list[str]", []),
+
+            "use-item-in-hand-result": ("str", ""),
+            "use-item-in-hand-results": ("list[str]", []),
+
+            "worlds": ("list[str]", []),
+        },
+        "mutex_groups": [
+            ("block", "blocks"),
+            ("action", "actions"),
+            ("use-interacted-block-result", "use-interacted-block-results"),
+            ("use-item-in-hand-result", "use-item-in-hand-results"),
+        ],
     },
 }
 
@@ -229,6 +256,7 @@ TASK_TYPE_TITLES = {
     "smelting": "Cuoci",
     "smithing": "Forgia",
     "enchanting": "Incanta",
+    "interact": "Interagisci",
 }
 
 
@@ -271,6 +299,10 @@ class Quest:
 
     # premi mostrati nel lore (sezione "Premi:") - NON sono comandi
     lore_reward_lines: list = field(default_factory=list)
+
+    # lore: permetti modifica manuale senza farsi sovrascrivere dall'auto
+    lore_normal_manual: bool = False
+    lore_started_manual: bool = False
 
     # display auto in numeri romani
     display_auto: bool = True
@@ -525,7 +557,7 @@ class TaskConfigDialog:
 
         self.win = tk.Toplevel(master)
         self.win.title(f"Config Task: {task_type}")
-        self.win.geometry("560x540")
+        self.win.geometry("560x560")
         self.win.grab_set()
 
         container = ttk.Frame(self.win)
@@ -558,7 +590,6 @@ class TaskConfigDialog:
                     self.fields[key] = (ftype, var)
 
                 elif ftype == "opt_int":
-                    # opzionale: se vuoto NON viene incluso nel yaml (e NON randomizziamo)
                     var = tk.StringVar(value="" if init_value is None else str(init_value))
                     ttk.Entry(container, textvariable=var).grid(row=row, column=0, sticky="ew", pady=(0, 8))
                     self.fields[key] = (ftype, var)
@@ -638,7 +669,7 @@ class TaskConfigDialog:
         for key, (ftype, _default) in schema["required"].items():
             params[key] = self._read_field(key, ftype)
 
-        for key, (ftype, default) in schema["optional"].items():
+        for key, (ftype, _default) in schema["optional"].items():
             val = self._read_field(key, ftype)
 
             if ftype == "str":
@@ -648,7 +679,6 @@ class TaskConfigDialog:
                 if val:
                     params[key] = val
             elif ftype == "opt_int":
-                # regola richiesta: se omesso NON inserire la chiave nel yaml
                 if val is not None:
                     params[key] = val
             elif ftype == "bool":
@@ -660,8 +690,14 @@ class TaskConfigDialog:
                     params[key] = val
 
         for a, b in schema.get("mutex_groups", []):
-            a_present = a in params and ((isinstance(params[a], str) and params[a] != "") or (isinstance(params[a], list) and len(params[a]) > 0))
-            b_present = b in params and ((isinstance(params[b], str) and params[b] != "") or (isinstance(params[b], list) and len(params[b]) > 0))
+            a_present = a in params and (
+                (isinstance(params[a], str) and params[a] != "")
+                or (isinstance(params[a], list) and len(params[a]) > 0)
+            )
+            b_present = b in params and (
+                (isinstance(params[b], str) and params[b] != "")
+                or (isinstance(params[b], list) and len(params[b]) > 0)
+            )
             if a_present and b_present:
                 messagebox.showerror("Errore", f"I campi '{a}' e '{b}' non possono essere entrambi valorizzati.", parent=self.win)
                 return
@@ -706,7 +742,14 @@ class QuestTab(ttk.Frame):
     def _task_category_title(self, task_type: str) -> str:
         return TASK_TYPE_TITLES.get(task_type, task_type)
 
+    def _set_text_view(self, widget: tk.Text, content: str):
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", content)
+        widget.configure(state="disabled")
+
     def _rebuild_lore(self):
+        # Se l'utente ha messo manuale, non sovrascrivo quella sezione
         grouped: dict[str, list[tuple[str, str]]] = {}
         for tname, task in self.quest.tasks.items():
             cat = self._task_category_title(task.type)
@@ -714,42 +757,62 @@ class QuestTab(ttk.Frame):
             title = (task.label or tname).strip() or tname
             grouped[cat].append((tname, title))
 
-        lore_normal: list[str] = []
-        for cat in sorted(grouped.keys()):
-            lore_normal.append(f"&6{cat}:")
-            for _tname, title in grouped[cat]:
-                lore_normal.append(f"&8- &7{title}")
+        if not self.quest.lore_normal_manual:
+            lore_normal: list[str] = []
+            for cat in sorted(grouped.keys()):
+                lore_normal.append(f"&6{cat}:")
+                for _tname, title in grouped[cat]:
+                    lore_normal.append(f"&8- &7{title}")
 
-        lore_normal.append("")
-        lore_normal.append("&6Premi:")
-        for line in (self.quest.lore_reward_lines or []):
-            lore_normal.append(f"&8- &7{line}")
-        lore_normal.append("")
-        lore_normal.append("&c&l ✘ &7Non iniziata.")
+            lore_normal.append("")
+            lore_normal.append("&6Premi:")
+            for line in (self.quest.lore_reward_lines or []):
+                lore_normal.append(f"&8- &7{line}")
+            lore_normal.append("")
+            lore_normal.append("&c&l ✘ &7Non iniziata.")
 
-        lore_started: list[str] = [""]
-        for tname, task in self.quest.tasks.items():
-            title = (task.label or tname).strip() or tname
-            lore_started.append(f"&6{title}: &7{{{tname}:progress}}/{{{tname}:goal}}")
+            self.quest.lore_normal = lore_normal
 
-        self.quest.lore_normal = lore_normal
-        self.quest.lore_started = lore_started
+        if not self.quest.lore_started_manual:
+            lore_started: list[str] = [""]
+            for tname, task in self.quest.tasks.items():
+                title = (task.label or tname).strip() or tname
+                lore_started.append(f"&6{title}: &7{{{tname}:progress}}/{{{tname}:goal}}")
 
-        self._set_text_view(self.lore_normal_view, "\n".join(lore_normal))
-        self._set_text_view(self.lore_started_view, "\n".join(lore_started))
+            self.quest.lore_started = lore_started
 
-    @staticmethod
-    def _set_text_view(widget: tk.Text, content: str):
-        widget.configure(state="normal")
-        widget.delete("1.0", "end")
-        widget.insert("1.0", content)
-        widget.configure(state="disabled")
+        self._set_text_view(self.lore_normal_view, "\n".join(self.quest.lore_normal))
+        self._set_text_view(self.lore_started_view, "\n".join(self.quest.lore_started))
 
     def _edit_lore_rewards(self):
         edited = MultiLineTextDialog.ask_list(self, "Modifica premi (lore)", list(self.quest.lore_reward_lines or []))
         if edited is None:
             return
         self.quest.lore_reward_lines = edited
+        # aggiornare la lore-normal solo se non è manuale
+        self._rebuild_lore()
+
+    def _edit_lore_normal(self):
+        edited = MultiLineTextDialog.ask_list(self, "Modifica lore-normal", list(self.quest.lore_normal or []))
+        if edited is None:
+            return
+        self.quest.lore_normal = edited
+        self.quest.lore_normal_manual = True
+        self._rebuild_lore()
+
+    def _edit_lore_started(self):
+        edited = MultiLineTextDialog.ask_list(self, "Modifica lore-started", list(self.quest.lore_started or []))
+        if edited is None:
+            return
+        self.quest.lore_started = edited
+        self.quest.lore_started_manual = True
+        self._rebuild_lore()
+
+    def _reset_lore_auto(self):
+        if not messagebox.askyesno("Conferma", "Vuoi ripristinare le lore automatiche (sovrascrive le modifiche manuali)?", parent=self):
+            return
+        self.quest.lore_normal_manual = False
+        self.quest.lore_started_manual = False
         self._rebuild_lore()
 
     def _default_display_name(self) -> str:
@@ -810,14 +873,16 @@ class QuestTab(ttk.Frame):
             command=self._on_display_auto_toggle,
         ).pack(side="left")
 
-        # ===== Lore auto
-        lore_box = ttk.LabelFrame(self.body, text="Lore (auto)")
+        # ===== Lore
+        lore_box = ttk.LabelFrame(self.body, text="Lore")
         lore_box.pack(fill="x", padx=10, pady=10)
 
         lore_btns = ttk.Frame(lore_box)
         lore_btns.pack(fill="x", padx=8, pady=(8, 0))
-        ttk.Button(lore_btns, text="Modifica premi (lore)...", command=self._edit_lore_rewards).pack(side="left")
-        ttk.Button(lore_btns, text="Rigenera lore", command=self._rebuild_lore).pack(side="left", padx=8)
+        ttk.Button(lore_btns, text="Modifica lore-normal...", command=self._edit_lore_normal).pack(side="left")
+        ttk.Button(lore_btns, text="Modifica lore-started...", command=self._edit_lore_started).pack(side="left", padx=8)
+        ttk.Button(lore_btns, text="Modifica premi (lore)...", command=self._edit_lore_rewards).pack(side="left", padx=8)
+        ttk.Button(lore_btns, text="Reset lore (auto)", command=self._reset_lore_auto).pack(side="right")
 
         lore_frame = ttk.Frame(lore_box)
         lore_frame.pack(fill="x", padx=8, pady=8)
@@ -896,6 +961,7 @@ class QuestTab(ttk.Frame):
         self._rebuild_lore()
         self._update_placeholders_preview()
 
+    # ----- Tasks management -----
     def _refresh_tasks_tree(self):
         for i in self.tasks_tree.get_children():
             self.tasks_tree.delete(i)
@@ -912,15 +978,13 @@ class QuestTab(ttk.Frame):
     def _default_params_for(self, task_type: str) -> dict:
         schema = TASK_DEFS[task_type]
         params = {}
-        # required
         for key, (ftype, _default) in schema["required"].items():
             if ftype == "int":
                 params[key] = random.randint(1, 64)
             else:
                 params[key] = ""
-        # optional defaults
+
         for key, (ftype, default) in schema["optional"].items():
-            # per opt_int default deve essere None e NON random
             if ftype == "list[str]":
                 params[key] = []
             elif ftype == "opt_int":
@@ -945,6 +1009,7 @@ class QuestTab(ttk.Frame):
 
         self.quest.tasks[name] = Task(name=name, type=task_type, params=params, label=label)
         self._refresh_tasks_tree()
+        # se le lore sono in auto, si aggiornano; se sono manuali, rimangono come sono
         self._rebuild_lore()
         self._update_placeholders_preview()
 
@@ -1060,6 +1125,7 @@ class QuestTab(ttk.Frame):
         self.quest.cooldown_time = int(self.cooldown_time_var.get())
         self.quest.requires = self.requires_editor.get_list()
 
+        # assicurati che il model contenga l'ultima versione visualizzata
         self._rebuild_lore()
 
 
@@ -1070,7 +1136,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("SkyBlock Quests Creator")
-        self.geometry("980x760")
+        self.geometry("980x780")
 
         self.quests: list[Quest] = []
         self.quest_tabs: list[QuestTab] = []
@@ -1169,6 +1235,8 @@ class App(tk.Tk):
                 cooldown_time=1440,
                 requires=[],
                 lore_reward_lines=[],
+                lore_normal_manual=False,
+                lore_started_manual=False,
                 display_auto=True,
             )
 
