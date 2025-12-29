@@ -94,6 +94,12 @@ def yaml_dump(data, indent: int = 0) -> str:
 
 # =========================
 # Task definitions (schema)
+# Schema field format:
+#   "key": (ftype, default)
+#
+# ftype supported:
+#   - "int", "opt_int", "bool", "str", "list[str]", "enum"
+# for enum, default = (choices_list, default_value)
 # =========================
 TASK_DEFS = {
     "blockbreak": {
@@ -175,7 +181,7 @@ TASK_DEFS = {
             "mobs": ("list[str]", []),
             "name": ("str", ""),
             "names": ("list[str]", []),
-            "hostile": ("str", ""),  # vuoto oppure "true"/"false"
+            "hostile": ("str", ""),
             "item": ("str", ""),
             "exact-match": ("bool", True),
             "worlds": ("list[str]", []),
@@ -194,6 +200,7 @@ TASK_DEFS = {
     "smithing": {
         "required": {"amount": ("int", None)},
         "optional": {
+            "mode": ("enum", (["any", "transform", "trim"], "any")),  # NEW: selettore
             "item": ("str", ""),
             "exact-match": ("bool", True),
             "worlds": ("list[str]", []),
@@ -237,7 +244,6 @@ TASK_DEFS = {
             ("use-item-in-hand-result", "use-item-in-hand-results"),
         ],
     },
-    # === NUOVA TASK: gathering ===
     "gathering": {
         "required": {
             "amount": ("int", None),
@@ -277,7 +283,7 @@ class Task:
     name: str
     type: str
     params: dict = field(default_factory=dict)
-    label: str = ""  # usata per lore-started + placeholders (titolo obiettivo)
+    label: str = ""
 
 
 @dataclass
@@ -287,7 +293,7 @@ class Quest:
     category: str
     category_display: str
 
-    tasks: dict = field(default_factory=dict)  # name -> Task
+    tasks: dict = field(default_factory=dict)
 
     display_name: str = ""
     display_type: str = "STONE"
@@ -295,25 +301,21 @@ class Quest:
     lore_normal: list = field(default_factory=list)
     lore_started: list = field(default_factory=list)
 
-    rewards: list = field(default_factory=list)  # comandi minecraft
+    rewards: list = field(default_factory=list)
 
     repeatable: bool = False
     cooldown_enabled: bool = True
     cooldown_time: int = 1440
     requires: list = field(default_factory=list)
 
-    # placeholders modificabili
-    placeholders_override: dict = field(default_factory=dict)  # key -> value
-    progress_placeholders_override: dict = field(default_factory=dict)  # taskName -> value
+    placeholders_override: dict = field(default_factory=dict)
+    progress_placeholders_override: dict = field(default_factory=dict)
 
-    # premi mostrati nel lore (sezione "Premi:") - NON sono comandi
     lore_reward_lines: list = field(default_factory=list)
 
-    # lore: permetti modifica manuale senza farsi sovrascrivere dall'auto
     lore_normal_manual: bool = False
     lore_started_manual: bool = False
 
-    # display auto in numeri romani
     display_auto: bool = True
 
 
@@ -321,8 +323,6 @@ class Quest:
 # UI helpers
 # =========================
 class ListEditor(tk.Frame):
-    """Editor listbox con Aggiungi/Modifica/Rimuovi (usato per rewards comandi, requires, ecc.)."""
-
     def __init__(self, master, title: str, initial=None):
         super().__init__(master)
         self.columnconfigure(0, weight=1)
@@ -401,15 +401,8 @@ class ListEditor(tk.Frame):
     def get_list(self) -> list[str]:
         return list(self.listbox.get(0, tk.END))
 
-    def set_list(self, values: list[str]):
-        self.listbox.delete(0, tk.END)
-        for x in values:
-            self.listbox.insert(tk.END, x)
-
 
 class MultiLineTextDialog:
-    """Dialog per list[str] (una riga = un valore) con tasto SALVA."""
-
     @staticmethod
     def ask_list(master, title: str, initial: list[str]) -> list[str] | None:
         win = tk.Toplevel(master)
@@ -446,11 +439,6 @@ class MultiLineTextDialog:
 
 
 class DictTextDialog:
-    """
-    Editor per dict YAML-like: 1 riga = "chiave: valore"
-    (split sul primo ':', il resto è valore). Ha tasto SALVA.
-    """
-
     @staticmethod
     def ask_dict(master, title: str, initial_dict: dict) -> dict | None:
         win = tk.Toplevel(master)
@@ -511,7 +499,6 @@ class DictTextDialog:
 # =========================
 class TaskNameTypeDialog:
     def __init__(self, master, existing_names: set[str]):
-        self.master = master
         self.existing_names = existing_names
         self.result = None
 
@@ -560,7 +547,6 @@ class TaskNameTypeDialog:
 
 class TaskConfigDialog:
     def __init__(self, master, task_type: str, initial_params: dict, initial_label: str):
-        self.master = master
         self.task_type = task_type
         self.result = None
 
@@ -577,7 +563,7 @@ class TaskConfigDialog:
         self.label_var = tk.StringVar(value=initial_label or "")
         ttk.Entry(container, textvariable=self.label_var).grid(row=1, column=0, sticky="ew", pady=(0, 10))
 
-        self.fields = {}  # key -> (ftype, holder)
+        self.fields = {}  # key -> (ftype, holder, extra)
 
         schema = TASK_DEFS[task_type]
         all_fields = [("required", schema["required"]), ("optional", schema["optional"])]
@@ -596,34 +582,41 @@ class TaskConfigDialog:
                 if ftype == "int":
                     var = tk.StringVar(value=str(init_value if init_value is not None else random.randint(1, 64)))
                     ttk.Entry(container, textvariable=var).grid(row=row, column=0, sticky="ew", pady=(0, 8))
-                    self.fields[key] = (ftype, var)
+                    self.fields[key] = (ftype, var, None)
 
                 elif ftype == "opt_int":
                     var = tk.StringVar(value="" if init_value is None else str(init_value))
                     ttk.Entry(container, textvariable=var).grid(row=row, column=0, sticky="ew", pady=(0, 8))
-                    self.fields[key] = (ftype, var)
+                    self.fields[key] = (ftype, var, None)
 
                 elif ftype == "bool":
                     var = tk.BooleanVar(value=bool(init_value))
                     ttk.Checkbutton(container, variable=var, text="true/false").grid(row=row, column=0, sticky="w", pady=(0, 8))
-                    self.fields[key] = (ftype, var)
+                    self.fields[key] = (ftype, var, None)
 
                 elif ftype == "str":
-                    # per required string -> init_value sarà None; mostro vuoto
                     var = tk.StringVar(value="" if init_value is None else str(init_value))
                     ttk.Entry(container, textvariable=var).grid(row=row, column=0, sticky="ew", pady=(0, 8))
-                    self.fields[key] = (ftype, var)
+                    self.fields[key] = (ftype, var, None)
 
                 elif ftype == "list[str]":
                     ttk.Button(container, text="Modifica lista...", command=lambda k=key: self._edit_list(k)).grid(
                         row=row, column=0, sticky="w", pady=(0, 8)
                     )
-                    self.fields[key] = (ftype, list(init_value or []))
+                    self.fields[key] = (ftype, list(init_value or []), None)
+
+                elif ftype == "enum":
+                    choices, default_value = default
+                    value = init_value if init_value not in (None, "") else default_value
+                    var = tk.StringVar(value=value)
+                    cb = ttk.Combobox(container, textvariable=var, values=list(choices), state="readonly")
+                    cb.grid(row=row, column=0, sticky="w", pady=(0, 8))
+                    self.fields[key] = (ftype, var, list(choices))
 
                 else:
                     var = tk.StringVar(value=str(init_value))
                     ttk.Entry(container, textvariable=var).grid(row=row, column=0, sticky="ew", pady=(0, 8))
-                    self.fields[key] = (ftype, var)
+                    self.fields[key] = (ftype, var, None)
 
                 row += 1
 
@@ -638,14 +631,15 @@ class TaskConfigDialog:
         ttk.Button(btns, text="Annulla", command=self._cancel).grid(row=0, column=1, padx=5)
 
     def _edit_list(self, key: str):
-        ftype, current = self.fields[key]
+        ftype, current, _ = self.fields[key]
         edited = MultiLineTextDialog.ask_list(self.win, f"Modifica lista: {key}", current)
         if edited is None:
             return
-        self.fields[key] = (ftype, edited)
+        self.fields[key] = (ftype, edited, None)
 
     def _read_field(self, key: str, ftype: str):
-        _t, holder = self.fields[key]
+        _t, holder, extra = self.fields[key]
+
         if ftype == "int":
             s = holder.get().strip()
             try:
@@ -673,18 +667,24 @@ class TaskConfigDialog:
         if ftype == "list[str]":
             return list(holder)
 
+        if ftype == "enum":
+            # readonly combobox: sempre valido
+            return holder.get()
+
         return holder.get()
 
     def _ok(self):
         schema = TASK_DEFS[self.task_type]
 
         params = {}
+
+        # required: sempre presenti
         for key, (ftype, _default) in schema["required"].items():
             val = self._read_field(key, ftype)
-            # required string: non forzo non-vuoto, ma lo salvo comunque (anche vuoto)
             params[key] = val if val is not None else ""
 
-        for key, (ftype, _default) in schema["optional"].items():
+        # optional: includo se significativo
+        for key, (ftype, default) in schema["optional"].items():
             val = self._read_field(key, ftype)
 
             if ftype == "str":
@@ -696,6 +696,9 @@ class TaskConfigDialog:
             elif ftype == "opt_int":
                 if val is not None:
                     params[key] = val
+            elif ftype == "enum":
+                # includiamo sempre, così "any" viene scritto coerentemente
+                params[key] = val
             elif ftype == "bool":
                 params[key] = val
             elif ftype == "int":
@@ -704,6 +707,7 @@ class TaskConfigDialog:
                 if val is not None:
                     params[key] = val
 
+        # mutex validation
         for a, b in schema.get("mutex_groups", []):
             a_present = a in params and (
                 (isinstance(params[a], str) and params[a] != "")
@@ -777,7 +781,6 @@ class QuestTab(ttk.Frame):
                 lore_normal.append(f"&6{cat}:")
                 for _tname, title in grouped[cat]:
                     lore_normal.append(f"&8- &7{title}")
-
             lore_normal.append("")
             lore_normal.append("&6Premi:")
             for line in (self.quest.lore_reward_lines or []):
@@ -839,7 +842,7 @@ class QuestTab(ttk.Frame):
             self.display_name_var.set(self._default_display_name())
 
     def _build(self):
-        # ===== Tasks
+        # Tasks
         tasks_box = ttk.LabelFrame(self.body, text="Tasks")
         tasks_box.pack(fill="x", padx=10, pady=10)
 
@@ -860,7 +863,7 @@ class QuestTab(ttk.Frame):
 
         self._refresh_tasks_tree()
 
-        # ===== Display
+        # Display
         display_box = ttk.LabelFrame(self.body, text="Display")
         display_box.pack(fill="x", padx=10, pady=10)
         display_box.columnconfigure(0, weight=1)
@@ -884,7 +887,7 @@ class QuestTab(ttk.Frame):
             command=self._on_display_auto_toggle,
         ).pack(side="left")
 
-        # ===== Lore
+        # Lore
         lore_box = ttk.LabelFrame(self.body, text="Lore")
         lore_box.pack(fill="x", padx=10, pady=10)
 
@@ -910,13 +913,13 @@ class QuestTab(ttk.Frame):
         self.lore_normal_view.configure(state="disabled")
         self.lore_started_view.configure(state="disabled")
 
-        # ===== Rewards (comandi)
+        # Rewards
         rewards_box = ttk.LabelFrame(self.body, text="Rewards (comandi Minecraft)")
         rewards_box.pack(fill="x", padx=10, pady=10)
         self.rewards_editor = ListEditor(rewards_box, "Lista rewards", self.quest.rewards)
         self.rewards_editor.pack(fill="both", expand=True)
 
-        # ===== Placeholders
+        # Placeholders
         ph_box = ttk.LabelFrame(self.body, text="Placeholders (auto + modificabili)")
         ph_box.pack(fill="x", padx=10, pady=10)
 
@@ -934,7 +937,7 @@ class QuestTab(ttk.Frame):
             anchor="e", padx=8, pady=(0, 8)
         )
 
-        # ===== Options
+        # Options
         opt_box = ttk.LabelFrame(self.body, text="Options")
         opt_box.pack(fill="x", padx=10, pady=10)
         opt_box.columnconfigure(1, weight=1)
@@ -966,13 +969,12 @@ class QuestTab(ttk.Frame):
         self.requires_editor = ListEditor(opt_box, "requires (quest richieste)", self.quest.requires)
         self.requires_editor.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=8, pady=8)
 
-        # stato iniziale
+        # init
         if self.display_auto_var.get():
             self.display_name_var.set(self._default_display_name())
         self._rebuild_lore()
         self._update_placeholders_preview()
 
-    # ----- Tasks management -----
     def _refresh_tasks_tree(self):
         for i in self.tasks_tree.get_children():
             self.tasks_tree.delete(i)
@@ -989,17 +991,21 @@ class QuestTab(ttk.Frame):
     def _default_params_for(self, task_type: str) -> dict:
         schema = TASK_DEFS[task_type]
         params = {}
+
         for key, (ftype, _default) in schema["required"].items():
             if ftype == "int":
                 params[key] = random.randint(1, 64)
             else:
-                params[key] = ""  # required string -> vuoto
+                params[key] = ""
 
         for key, (ftype, default) in schema["optional"].items():
             if ftype == "list[str]":
                 params[key] = []
             elif ftype == "opt_int":
                 params[key] = None
+            elif ftype == "enum":
+                choices, default_value = default
+                params[key] = default_value
             else:
                 params[key] = default
         return params
@@ -1049,7 +1055,7 @@ class QuestTab(ttk.Frame):
             self._rebuild_lore()
             self._update_placeholders_preview()
 
-    # ----- Placeholders -----
+    # placeholders
     def _reset_placeholders_override(self):
         if not messagebox.askyesno("Conferma", "Vuoi resettare tutte le modifiche ai placeholders per questa quest?", parent=self):
             return
