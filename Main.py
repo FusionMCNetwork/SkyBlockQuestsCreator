@@ -205,13 +205,11 @@ TASK_DEFS = {
         "optional": {
             "item": ("str", ""),
             "enchantment": ("list[str]", []),
-            # min-level: opzionale, default null -> se vuoto NON va scritto nel yaml e NON randomizzato
-            "min-level": ("opt_int", None),
+            "min-level": ("opt_int", None),  # se vuoto non viene scritto nel yaml
             "worlds": ("list[str]", []),
         },
         "mutex_groups": [],
     },
-    # === NUOVA TASK: interact ===
     "interact": {
         "required": {"amount": ("int", None)},
         "optional": {
@@ -239,6 +237,16 @@ TASK_DEFS = {
             ("use-item-in-hand-result", "use-item-in-hand-results"),
         ],
     },
+    # === NUOVA TASK: gathering ===
+    "gathering": {
+        "required": {
+            "amount": ("int", None),
+            "item": ("str", None),  # obbligatorio stringa, default vuoto
+            "mob": ("str", None),   # obbligatorio stringa, default vuoto
+        },
+        "optional": {},
+        "mutex_groups": [],
+    },
 }
 
 TASK_TYPES = list(TASK_DEFS.keys())
@@ -257,6 +265,7 @@ TASK_TYPE_TITLES = {
     "smithing": "Forgia",
     "enchanting": "Incanta",
     "interact": "Interagisci",
+    "gathering": "Preleva da",
 }
 
 
@@ -600,7 +609,8 @@ class TaskConfigDialog:
                     self.fields[key] = (ftype, var)
 
                 elif ftype == "str":
-                    var = tk.StringVar(value=str(init_value) if init_value is not None else "")
+                    # per required string -> init_value sarà None; mostro vuoto
+                    var = tk.StringVar(value="" if init_value is None else str(init_value))
                     ttk.Entry(container, textvariable=var).grid(row=row, column=0, sticky="ew", pady=(0, 8))
                     self.fields[key] = (ftype, var)
 
@@ -656,10 +666,13 @@ class TaskConfigDialog:
 
         if ftype == "bool":
             return bool(holder.get())
+
         if ftype == "str":
             return holder.get()
+
         if ftype == "list[str]":
             return list(holder)
+
         return holder.get()
 
     def _ok(self):
@@ -667,7 +680,9 @@ class TaskConfigDialog:
 
         params = {}
         for key, (ftype, _default) in schema["required"].items():
-            params[key] = self._read_field(key, ftype)
+            val = self._read_field(key, ftype)
+            # required string: non forzo non-vuoto, ma lo salvo comunque (anche vuoto)
+            params[key] = val if val is not None else ""
 
         for key, (ftype, _default) in schema["optional"].items():
             val = self._read_field(key, ftype)
@@ -749,7 +764,6 @@ class QuestTab(ttk.Frame):
         widget.configure(state="disabled")
 
     def _rebuild_lore(self):
-        # Se l'utente ha messo manuale, non sovrascrivo quella sezione
         grouped: dict[str, list[tuple[str, str]]] = {}
         for tname, task in self.quest.tasks.items():
             cat = self._task_category_title(task.type)
@@ -770,7 +784,6 @@ class QuestTab(ttk.Frame):
                 lore_normal.append(f"&8- &7{line}")
             lore_normal.append("")
             lore_normal.append("&c&l ✘ &7Non iniziata.")
-
             self.quest.lore_normal = lore_normal
 
         if not self.quest.lore_started_manual:
@@ -778,7 +791,6 @@ class QuestTab(ttk.Frame):
             for tname, task in self.quest.tasks.items():
                 title = (task.label or tname).strip() or tname
                 lore_started.append(f"&6{title}: &7{{{tname}:progress}}/{{{tname}:goal}}")
-
             self.quest.lore_started = lore_started
 
         self._set_text_view(self.lore_normal_view, "\n".join(self.quest.lore_normal))
@@ -789,7 +801,6 @@ class QuestTab(ttk.Frame):
         if edited is None:
             return
         self.quest.lore_reward_lines = edited
-        # aggiornare la lore-normal solo se non è manuale
         self._rebuild_lore()
 
     def _edit_lore_normal(self):
@@ -982,7 +993,7 @@ class QuestTab(ttk.Frame):
             if ftype == "int":
                 params[key] = random.randint(1, 64)
             else:
-                params[key] = ""
+                params[key] = ""  # required string -> vuoto
 
         for key, (ftype, default) in schema["optional"].items():
             if ftype == "list[str]":
@@ -1009,7 +1020,6 @@ class QuestTab(ttk.Frame):
 
         self.quest.tasks[name] = Task(name=name, type=task_type, params=params, label=label)
         self._refresh_tasks_tree()
-        # se le lore sono in auto, si aggiornano; se sono manuali, rimangono come sono
         self._rebuild_lore()
         self._update_placeholders_preview()
 
@@ -1125,7 +1135,6 @@ class QuestTab(ttk.Frame):
         self.quest.cooldown_time = int(self.cooldown_time_var.get())
         self.quest.requires = self.requires_editor.get_list()
 
-        # assicurati che il model contenga l'ultima versione visualizzata
         self._rebuild_lore()
 
 
